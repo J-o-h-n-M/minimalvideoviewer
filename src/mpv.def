@@ -1,0 +1,16 @@
+; Exports of libmpv used by MinimalVideoViewer (to build an MSVC import library)
+LIBRARY libmpv-2.dll
+EXPORTS
+    mpv_create
+    mpv_initialize
+    mpv_set_option
+    mpv_set_option_string
+    mpv_command_async
+    mpv_set_property_async
+    mpv_get_property
+    mpv_get_property_string
+    mpv_free
+    mpv_observe_property
+    mpv_wait_event
+    mpv_set_wakeup_callback
+    mpv_terminate_destroy
