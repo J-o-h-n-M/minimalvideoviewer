@@ -33,3 +33,12 @@ frame by frame and stops at the start; press play to return to normal playback.
 | O | Open file |
 | Esc | Leave fullscreen |
 | Q | Quit |
+
+## License
+
+The code in this repository is MIT licensed (see [LICENSE](LICENSE)).
+
+It uses [libmpv](https://mpv.io/), which is downloaded by `build.bat` and not part of this
+repository. libmpv is licensed under the GPL, so if you distribute the built program together
+with `libmpv-2.dll`, that bundle must follow the GPL terms (include the license text and make the
+source available).
