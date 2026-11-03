@@ -12,6 +12,15 @@ A tiny looping video player for Windows, built on libmpv (hardware decoding, GPU
 | --- | --- |
 | ![Fast forwarding at 4x, shown as "FF 4×" in the control bar](docs/fast-forward.jpg) | ![Right-click menu with the Subtitles submenu open](docs/menu.jpg) |
 
+## Download
+
+Get the zip from the [latest release](https://github.com/J-o-h-n-M/minimalvideoviewer/releases/latest),
+unpack it and run `MinimalVideoViewer.exe`. Keep the exe and `libmpv-2.dll` together.
+Needs 64-bit Windows 10 or 11 with up-to-date graphics drivers.
+
+The exe is not code-signed, so Windows SmartScreen may warn the first time you run it:
+click **More info** → **Run anyway**.
+
 ## Build
 
 Run `build.bat` (needs Visual Studio C++ Build Tools). It downloads libmpv on first run and
