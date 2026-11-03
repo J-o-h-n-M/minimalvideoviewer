@@ -29,7 +29,8 @@ produces `build\MinimalVideoViewer.exe` + `build\libmpv-2.dll` — keep those tw
 ## Use
 
 `MinimalVideoViewer.exe video.mp4`, drag a file onto the window, or start it without arguments to pick a file.
-Videos always loop; zoom and pan are kept across loops.
+Videos always loop; zoom and pan are kept across loops. The window reopens with the size,
+position and maximized state it had when you last closed it.
 
 Moving the mouse shows a control bar (progress bar, rewind, play/pause, fast forward) that hides
 after 5 seconds without mouse movement. Rewind and fast forward work like a VCR shuttle: smooth,

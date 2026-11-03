@@ -61,6 +61,7 @@ static BOOL g_closing;
 static double g_zoom, g_panx, g_pany;
 static double g_vw, g_vh; // displayed video size in pixels (after rotation)
 static BOOL g_sized_to_video;
+static BOOL g_restored_placement; // window size/state comes from the last session
 
 static BOOL g_dragging;
 static POINT g_drag_last;
@@ -586,11 +587,42 @@ static void toggle_fullscreen(void)
     g_fullscreen = !g_fullscreen;
 }
 
-// Resize the window once per file to the video's size (at most 80% of the screen).
+// Remember size, position and maximized state for the next start. In fullscreen
+// the state from before going fullscreen is saved.
+static void save_placement(void)
+{
+    WINDOWPLACEMENT wp = { sizeof(wp) };
+    if (g_fullscreen)
+        wp = g_wp;
+    else if (!GetWindowPlacement(g_hwnd, &wp))
+        return;
+    if (wp.showCmd != SW_SHOWMAXIMIZED) // e.g. minimized: reopen as it was before
+        wp.showCmd = wp.flags & WPF_RESTORETOMAXIMIZED ? SW_SHOWMAXIMIZED : SW_SHOWNORMAL;
+    RegSetKeyValueW(HKEY_CURRENT_USER, REG_KEY, L"WindowPlacement", REG_BINARY, &wp, sizeof(wp));
+}
+
+// Applies (and shows) the saved window state. Fails when nothing is saved yet or
+// the screen it was on is no longer connected.
+static BOOL restore_placement(void)
+{
+    WINDOWPLACEMENT wp;
+    DWORD n = sizeof(wp);
+    if (RegGetValueW(HKEY_CURRENT_USER, REG_KEY, L"WindowPlacement", RRF_RT_REG_BINARY, NULL,
+                     &wp, &n) != ERROR_SUCCESS || n != sizeof(wp) || wp.length != sizeof(wp) ||
+        !MonitorFromRect(&wp.rcNormalPosition, MONITOR_DEFAULTTONULL))
+        return FALSE;
+    if (wp.showCmd != SW_SHOWMAXIMIZED)
+        wp.showCmd = SW_SHOWNORMAL;
+    wp.flags = 0;
+    return SetWindowPlacement(g_hwnd, &wp);
+}
+
+// Resize the window once per file to the video's size (at most 80% of the screen),
+// unless the window size was restored from the last session.
 static void size_window_to_video(void)
 {
     MONITORINFO mi = { sizeof(mi) };
-    if (g_fullscreen || IsZoomed(g_hwnd) ||
+    if (g_restored_placement || g_fullscreen || IsZoomed(g_hwnd) ||
         !GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &mi))
         return;
     RECT wa = mi.rcWork;
@@ -1057,6 +1089,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         // messages; the window is destroyed on MPV_EVENT_SHUTDOWN.
         if (g_mpv && !g_closing) {
             g_closing = TRUE;
+            save_placement();
             ShowWindow(hwnd, SW_HIDE);
             mpv_cmd("quit", NULL, NULL);
             return 0;
@@ -1133,7 +1166,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     mpv_observe_property(g_mpv, 0, "eof-reached", MPV_FORMAT_FLAG);
     mpv_set_wakeup_callback(g_mpv, on_mpv_wakeup, NULL);
 
-    ShowWindow(g_hwnd, show);
+    g_restored_placement = restore_placement();
+    if (!g_restored_placement)
+        ShowWindow(g_hwnd, show);
     open_file(path);
     LocalFree(argv);
 
