@@ -24,6 +24,6 @@ if not exist build mkdir build
 lib /nologo /def:src\mpv.def /machine:x64 /out:build\mpv.lib || exit /b 1
 cl /nologo /O2 /W4 /MT /DUNICODE /D_UNICODE /Ithird_party\libmpv\include src\mvv.c ^
    /Fobuild\ /Fe:build\MinimalVideoViewer.exe ^
-   /link /SUBSYSTEM:WINDOWS build\mpv.lib user32.lib gdi32.lib shell32.lib comdlg32.lib advapi32.lib || exit /b 1
+   /link /SUBSYSTEM:WINDOWS build\mpv.lib user32.lib gdi32.lib shell32.lib comdlg32.lib advapi32.lib ole32.lib uuid.lib || exit /b 1
 copy /y third_party\libmpv\libmpv-2.dll build\ >nul
 echo Built build\MinimalVideoViewer.exe

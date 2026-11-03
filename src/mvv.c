@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ole2.h>
 #include <mpv/client.h>
 
 #define WM_MPV_WAKEUP   (WM_APP + 1)  // lParam = Tile*
@@ -47,6 +48,7 @@
 #define BAR_HIDE_MS 5000
 #define BAR_OVERLAY "1"       // osd-overlay ids
 #define OSD_OVERLAY "2"
+#define DROP_OVERLAY "3"
 #define OSD_TIMER   2
 #define OSD_MS      1200
 #define ACCENT      0x3C8CFF  // ASS colours are BGR: orange
@@ -87,7 +89,7 @@ typedef struct Tile {
 
     int mute_sent;          // last values sent to mpv, -1 = none yet
     int sub_margin_sent;
-    char bar_last[ASS_SIZE], osd_last[ASS_SIZE];
+    char bar_last[ASS_SIZE], osd_last[ASS_SIZE], drop_last[ASS_SIZE];
 } Tile;
 
 static HWND g_hwnd;
@@ -132,6 +134,13 @@ static BOOL g_muted;
 // in the registry.
 static const int kJumps[] = { 1, 2, 3, 5, 10, 15, 30, 60 };
 static int g_jump = 5;
+
+// Drag and drop: while files are dragged over a video it shows two landing zones,
+// one that adds the videos and one that replaces this video.
+enum { ZONE_NONE, ZONE_ADD, ZONE_REPLACE, ZONE_SUBS };
+static Tile *g_drop_tile;
+static int g_drop_zone;
+static int g_drag_videos, g_drag_subs; // files in the current drag
 
 static void draw_bar(Tile *t);
 static void draw_osd(Tile *t);
@@ -681,6 +690,87 @@ static void draw_osd(Tile *t)
     send_overlay(t, OSD_OVERLAY, &a, t->osd_last);
 }
 
+// Landing zones on tile t: the half towards the top/left adds, the other half
+// replaces (split along the tile's longer side).
+static void drop_zone_rects(Layout *L, RECT *add, RECT *replace)
+{
+    int m = S(12), g = S(8);
+    if (L->w >= L->h) {
+        SetRect(add, m, m, L->w / 2 - g / 2, L->h - m);
+        SetRect(replace, L->w / 2 + g / 2, m, L->w - m, L->h - m);
+    } else {
+        SetRect(add, m, m, L->w - m, L->h / 2 - g / 2);
+        SetRect(replace, m, L->h / 2 + g / 2, L->w - m, L->h - m);
+    }
+}
+
+static int drop_zone_at(Tile *t, int x, int y)
+{
+    if (!g_drag_videos)
+        return g_drag_subs ? ZONE_SUBS : ZONE_NONE;
+    if (tile_w(t) >= tile_h(t))
+        return x < tile_w(t) / 2 ? ZONE_ADD : ZONE_REPLACE;
+    return y < tile_h(t) / 2 ? ZONE_ADD : ZONE_REPLACE;
+}
+
+// One zone: a dark (or, under the pointer, orange) box with an outline and a label
+// sized to fit.
+static void draw_zone(Ass *a, Layout *L, const RECT *r, BOOL active, const char *label)
+{
+    int b = max(1, S(2)), w = r->right - r->left, h = r->bottom - r->top;
+    int fs = min(S(28), min(w, h) / 6);
+    fs = max(S(11), min(fs, (int)(w / (strlen(label) * 0.6 + 2))));
+    ass_shape(a, active ? ACCENT : 0x000000, active ? 0x50 : 0x70);
+    ass_rect(a, r->left, r->top, r->right, r->bottom);
+    ass_shape(a, 0xFFFFFF, active ? 0x00 : 0x80);
+    ass_rect(a, r->left, r->top, r->right, r->top + b);
+    ass_rect(a, r->left, r->bottom - b, r->right, r->bottom);
+    ass_rect(a, r->left, r->top, r->left + b, r->bottom);
+    ass_rect(a, r->right - b, r->top, r->right, r->bottom);
+    ass_printf(a, "\n{\\an5\\pos(%d,%d)\\fs%d\\b1\\bord0\\shad0\\1c&HFFFFFF&\\1a&H00&\\q2}%s",
+               (r->left + r->right) / 2, (r->top + r->bottom) / 2, fs, label);
+}
+
+static void draw_drop(Tile *t)
+{
+    static Ass a;
+    if (!t || t->closing)
+        return;
+    a.len = 0;
+    a.buf[0] = 0;
+
+    if (t == g_drop_tile && g_drop_zone != ZONE_NONE) {
+        Layout l, *L = &l;
+        char label[64];
+        get_layout(t, L);
+        if (g_drop_zone == ZONE_SUBS) {
+            RECT r;
+            SetRect(&r, S(12), S(12), L->w - S(12), L->h - S(12));
+            snprintf(label, sizeof(label), g_drag_subs > 1 ? "Load %d subtitle files" : "Load subtitles", g_drag_subs);
+            draw_zone(&a, L, &r, TRUE, label);
+        } else {
+            RECT add, replace;
+            drop_zone_rects(L, &add, &replace);
+            snprintf(label, sizeof(label), g_drag_videos > 1 ? "+ Add %d videos" : "+ Add video", g_drag_videos);
+            draw_zone(&a, L, &add, g_drop_zone == ZONE_ADD, label);
+            draw_zone(&a, L, &replace, g_drop_zone == ZONE_REPLACE, "Replace this video");
+        }
+    }
+    send_overlay(t, DROP_OVERLAY, &a, t->drop_last);
+}
+
+static void set_drop(Tile *t, int zone)
+{
+    if (t == g_drop_tile && zone == g_drop_zone)
+        return;
+    Tile *old = g_drop_tile;
+    g_drop_tile = t;
+    g_drop_zone = zone;
+    if (old != t)
+        draw_drop(old);
+    draw_drop(t);
+}
+
 // Shows the bar on tile t (moving it from another tile if needed).
 static void show_bar(Tile *t)
 {
@@ -953,6 +1043,8 @@ static void forget_tile(Tile *t)
         g_bar_tile = NULL;
     if (g_osd_tile == t)
         g_osd_tile = NULL;
+    if (g_drop_tile == t)
+        g_drop_tile = NULL;
     if (g_solo == t)
         g_solo = NULL;
     if (g_capture_tile == t) {
@@ -1454,6 +1546,120 @@ static void on_key(HWND hwnd, WPARAM key)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Drag and drop (OLE, so the landing zones can follow the pointer during the drag)
+
+// Subtitles go to `target` (or the video with sound); the first video replaces
+// `replace` when given, all other videos are added.
+static void drop_files(HDROP drop, Tile *target, Tile *replace)
+{
+    static wchar_t path[32768];
+    UINT count = DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
+    for (UINT i = 0; i < count; i++) {
+        if (!DragQueryFileW(drop, i, path, ARRAYSIZE(path)))
+            continue;
+        if (is_subtitle_file(path)) {
+            Tile *t = target ? target : g_audio_tile;
+            if (t)
+                add_subtitle(t, path);
+        } else if (replace) {
+            load_file(replace, path);
+            replace = NULL;
+        } else {
+            add_video(path);
+        }
+    }
+}
+
+// The dragged files, if any. Release with ReleaseStgMedium.
+static HDROP get_hdrop(IDataObject *data, STGMEDIUM *stg)
+{
+    FORMATETC fmt = { CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL };
+    return SUCCEEDED(data->lpVtbl->GetData(data, &fmt, stg)) ? (HDROP)stg->hGlobal : NULL;
+}
+
+// Updates the zones for the pointer at screen position pt and reports whether a
+// drop there would be accepted.
+static void drag_track(POINTL pt, DWORD *effect)
+{
+    POINT p = { pt.x, pt.y };
+    ScreenToClient(g_hwnd, &p);
+    Tile *t = tile_at(p.x, p.y);
+    set_drop(t, t ? drop_zone_at(t, p.x - t->rc.left, p.y - t->rc.top) : ZONE_NONE);
+    *effect = (g_drag_videos || g_drag_subs) && (*effect & DROPEFFECT_COPY) ? DROPEFFECT_COPY
+                                                                           : DROPEFFECT_NONE;
+}
+
+static HRESULT STDMETHODCALLTYPE dt_query_interface(IDropTarget *self, REFIID riid, void **out)
+{
+    if (IsEqualIID(riid, &IID_IUnknown) || IsEqualIID(riid, &IID_IDropTarget)) {
+        *out = self;
+        return S_OK;
+    }
+    *out = NULL;
+    return E_NOINTERFACE;
+}
+
+// The drop target is a static object, so reference counting is not needed.
+static ULONG STDMETHODCALLTYPE dt_add_ref(IDropTarget *self) { (void)self; return 2; }
+static ULONG STDMETHODCALLTYPE dt_release(IDropTarget *self) { (void)self; return 1; }
+
+static HRESULT STDMETHODCALLTYPE dt_drag_enter(IDropTarget *self, IDataObject *data, DWORD keys,
+                                               POINTL pt, DWORD *effect)
+{
+    static wchar_t path[32768];
+    STGMEDIUM stg;
+    HDROP drop = get_hdrop(data, &stg);
+    (void)self; (void)keys;
+    g_drag_videos = g_drag_subs = 0;
+    if (drop) {
+        UINT count = DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
+        for (UINT i = 0; i < count; i++)
+            if (DragQueryFileW(drop, i, path, ARRAYSIZE(path)))
+                *(is_subtitle_file(path) ? &g_drag_subs : &g_drag_videos) += 1;
+        ReleaseStgMedium(&stg);
+    }
+    drag_track(pt, effect);
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE dt_drag_over(IDropTarget *self, DWORD keys, POINTL pt, DWORD *effect)
+{
+    (void)self; (void)keys;
+    drag_track(pt, effect);
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE dt_drag_leave(IDropTarget *self)
+{
+    (void)self;
+    set_drop(NULL, ZONE_NONE);
+    return S_OK;
+}
+
+static HRESULT STDMETHODCALLTYPE dt_drop(IDropTarget *self, IDataObject *data, DWORD keys,
+                                         POINTL pt, DWORD *effect)
+{
+    STGMEDIUM stg;
+    (void)self; (void)keys;
+    drag_track(pt, effect);
+    Tile *t = g_drop_tile;
+    int zone = g_drop_zone;
+    set_drop(NULL, ZONE_NONE);
+    HDROP drop = get_hdrop(data, &stg);
+    if (drop) {
+        drop_files(drop, t, zone == ZONE_REPLACE ? t : NULL); // the black area adds
+        ReleaseStgMedium(&stg);
+    }
+    SetForegroundWindow(g_hwnd);
+    return S_OK;
+}
+
+static IDropTargetVtbl g_drop_vtbl = {
+    dt_query_interface, dt_add_ref, dt_release, dt_drag_enter, dt_drag_over, dt_drag_leave, dt_drop
+};
+static IDropTarget g_drop_target = { &g_drop_vtbl };
+
 // Tiles pass their mouse input on to the main window, in its coordinates.
 static LRESULT CALLBACK tile_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -1580,36 +1786,6 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         on_key(hwnd, wp);
         return 0;
 
-    case WM_DROPFILES: {
-        // A video dropped on a video replaces it; further videos, videos dropped on
-        // the black space around the grid, and videos dropped with Ctrl held are added.
-        // Subtitles go to the video they are dropped on.
-        static wchar_t path[32768];
-        POINT pt;
-        DragQueryPoint((HDROP)wp, &pt);
-        Tile *target = tile_at(pt.x, pt.y), *replace = target;
-        if (GetKeyState(VK_CONTROL) < 0)
-            replace = NULL;
-        UINT count = DragQueryFileW((HDROP)wp, 0xFFFFFFFF, NULL, 0);
-        for (UINT i = 0; i < count; i++) {
-            if (!DragQueryFileW((HDROP)wp, i, path, ARRAYSIZE(path)))
-                continue;
-            if (is_subtitle_file(path)) {
-                Tile *t = target ? target : g_audio_tile;
-                if (t)
-                    add_subtitle(t, path);
-            } else if (replace) {
-                load_file(replace, path);
-                replace = NULL;
-            } else {
-                add_video(path);
-            }
-        }
-        DragFinish((HDROP)wp);
-        SetForegroundWindow(hwnd);
-        return 0;
-    }
-
     case WM_SIZE:
         layout_tiles();
         return 0;
@@ -1642,6 +1818,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_DESTROY:
+        RevokeDragDrop(hwnd);
         PostQuitMessage(0);
         return 0;
     }
@@ -1652,6 +1829,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
 {
     (void)prev; (void)cmdline;
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    OleInitialize(NULL); // drag and drop
     load_settings();
 
     int argc = 0;
@@ -1672,11 +1850,12 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     wc.lpszClassName = L"MinimalVideoViewer";
     RegisterClassExW(&wc);
 
-    g_hwnd = CreateWindowExW(WS_EX_ACCEPTFILES, wc.lpszClassName, L"MinimalVideoViewer",
+    g_hwnd = CreateWindowExW(0, wc.lpszClassName, L"MinimalVideoViewer",
                              WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                              CW_USEDEFAULT, CW_USEDEFAULT, 960, 540, NULL, NULL, inst, NULL);
     if (!g_hwnd)
         return 1;
+    RegisterDragDrop(g_hwnd, &g_drop_target); // also covers the tiles (child windows)
 
     g_restored_placement = restore_placement();
     if (!g_restored_placement)
@@ -1695,5 +1874,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    OleUninitialize();
     return 0;
 }
