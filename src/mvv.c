@@ -695,49 +695,85 @@ static void scrub_to(Tile *t, int x)
 // ---------------------------------------------------------------------------
 // Window and grid
 
-// Arranges the tiles in the grid with the largest 16:9 cells for the window; an
-// incomplete last row is centred. In single-video view one tile fills the window.
+// Width/height of a tile's video; 16:9 until the video is loaded.
+static double tile_aspect(Tile *t)
+{
+    return t->vw > 0 && t->vh > 0 ? t->vw / t->vh : 16.0 / 9;
+}
+
+// Puts the n tiles in order over `rows` rows (row k gets tiles k*n/rows up to
+// (k+1)*n/rows). Each row is as tall as its videos can be while filling the window
+// width, each tile exactly as wide as its video needs, and everything is scaled down
+// together when the rows don't fit the height. Returns the total video area and,
+// when out is not NULL, the centred tile rectangles.
+static double justify(Tile **v, int n, int rows, int W, int H, int gap, RECT *out)
+{
+    double rh[MAX_TILES], total = 0, area = 0;
+    for (int k = 0; k < rows; k++) {
+        int a = k * n / rows, b = (k + 1) * n / rows;
+        double sum = 0;
+        for (int i = a; i < b; i++)
+            sum += tile_aspect(v[i]);
+        rh[k] = max(1.0, (double)W - gap * (b - a - 1)) / sum;
+        total += rh[k];
+        area += rh[k] * rh[k] * sum;
+    }
+    double s = min(1.0, max(1.0, (double)H - gap * (rows - 1)) / total);
+    if (out) {
+        double y = (H - (total * s + gap * (rows - 1))) / 2;
+        for (int k = 0; k < rows; k++) {
+            int a = k * n / rows, b = (k + 1) * n / rows;
+            double h = rh[k] * s, width = gap * (b - a - 1);
+            for (int i = a; i < b; i++)
+                width += tile_aspect(v[i]) * h;
+            double x = (W - width) / 2;
+            for (int i = a; i < b; i++) {
+                double w = tile_aspect(v[i]) * h;
+                SetRect(&out[i], (int)lround(x), (int)lround(y), (int)lround(x + w), (int)lround(y + h));
+                x += w + gap;
+            }
+            y += h + gap;
+        }
+    }
+    return area * s * s;
+}
+
+// Arranges the tiles so the videos are as large as possible: tried with every
+// number of rows, tiles shaped like their videos (vertical videos side by side,
+// wide ones stacked). A single video, or the one shown alone, fills the window.
 static void layout_tiles(void)
 {
     Tile *v[MAX_TILES];
-    RECT rc;
+    RECT rc, rects[MAX_TILES];
     int n = live_tiles(v);
     if (!n || g_closing)
         return;
     GetClientRect(g_hwnd, &rc);
     int W = rc.right, H = rc.bottom;
-    int gap = n > 1 && !g_solo ? max(1, (int)lround(2 * GetDpiForWindow(g_hwnd) / 96.0)) : 0;
 
-    int cols = 1;
-    double best = -1;
-    for (int c = 1; c <= n; c++) {
-        int r = (n + c - 1) / c;
-        double s = min((double)W / c / 16, (double)H / r / 9);
-        if (s > best + 1e-9) {
-            best = s;
-            cols = c;
+    if (n > 1 && !g_solo) {
+        int gap = max(1, (int)lround(2 * GetDpiForWindow(g_hwnd) / 96.0)), rows = 1;
+        double best = -1;
+        for (int r = 1; r <= n; r++) {
+            double area = justify(v, n, r, W, H, gap, NULL);
+            if (area > best + 1e-6) {
+                best = area;
+                rows = r;
+            }
         }
+        justify(v, n, rows, W, H, gap, rects);
     }
-    int rows = (n + cols - 1) / cols;
 
     for (int i = 0; i < n; i++) {
         Tile *t = v[i];
-        RECT r;
-        if (g_solo) {
-            if (t != g_solo) {
+        RECT r = rects[i];
+        if (n == 1 || g_solo) {
+            if (g_solo && t != g_solo) {
                 ShowWindow(t->hwnd, SW_HIDE);
                 SetRectEmpty(&t->rc);
                 continue;
             }
             SetRect(&r, 0, 0, W, H);
-        } else {
-            int row = i / cols, col = i % cols;
-            int in_row = row == rows - 1 ? n - row * cols : cols;
-            int off = (cols - in_row) * W / cols / 2;
-            r.left = off + col * W / cols;
-            r.right = off + (col + 1) * W / cols - (col < in_row - 1 ? gap : 0);
-            r.top = row * H / rows;
-            r.bottom = (row + 1) * H / rows - (row < rows - 1 ? gap : 0);
         }
         if (!EqualRect(&r, &t->rc)) {
             t->rc = r;
@@ -849,12 +885,15 @@ static void on_video_reconfig(Tile *t)
         dw <= 0 || dh <= 0)
         return;
     mpv_get_property(t->mpv, "video-out-params/rotate", MPV_FORMAT_INT64, &rot);
+    double aspect = tile_aspect(t);
     t->vw = (double)(rot % 180 ? dh : dw);
     t->vh = (double)(rot % 180 ? dw : dh);
     if (!t->sized) {
         t->sized = TRUE;
         size_window_to_video(t);
     }
+    if (fabs(tile_aspect(t) - aspect) > 1e-3)
+        layout_tiles(); // the grid is shaped by the videos
     apply_view(t);
 }
 

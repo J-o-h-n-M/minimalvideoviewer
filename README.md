@@ -40,8 +40,9 @@ frame by frame and stops at the start; press play to return to normal playback.
 
 ### Several videos at once
 
-Open or drop several files (or drop more onto the window, or press A) and they play side by side in
-a grid that fits the window, up to 16. Each video loops and zooms on its own. The mouse and keys act
+Open or drop several files (or drop more onto the window, or press A) and they play side by side,
+up to 16. The layout follows the shape of the videos so they are as large as possible: vertical
+videos stand next to each other, wide ones are stacked. Each video loops and zooms on its own. The mouse and keys act
 on the video under the mouse pointer, which is also the only one you hear. Hold Shift with Space,
 J/L, Left/Right or R to do it to all videos. Double-click a video to show only that one; double-click
 again (or Esc) to go back to the grid.
