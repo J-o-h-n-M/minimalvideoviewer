@@ -49,6 +49,9 @@
 #define BAR_OVERLAY "1"       // osd-overlay ids
 #define OSD_OVERLAY "2"
 #define DROP_OVERLAY "3"
+#define MOVE_OVERLAY "4"
+#define MOVE_TIMER   3
+#define MOVE_HOLD_MS 450  // press and hold this long on a zoomed-in video to move it
 #define OSD_TIMER   2
 #define OSD_MS      1200
 #define ACCENT      0x3C8CFF  // ASS colours are BGR: orange
@@ -89,7 +92,7 @@ typedef struct Tile {
 
     int mute_sent;          // last values sent to mpv, -1 = none yet
     int sub_margin_sent;
-    char bar_last[ASS_SIZE], osd_last[ASS_SIZE], drop_last[ASS_SIZE];
+    char bar_last[ASS_SIZE], osd_last[ASS_SIZE], drop_last[ASS_SIZE], move_last[ASS_SIZE];
 } Tile;
 
 static HWND g_hwnd;
@@ -108,6 +111,12 @@ static BOOL g_restored_placement; // window size/state comes from the last sessi
 static BOOL g_dragging;
 static POINT g_drag_last;
 static BOOL g_closed_by_click; // the last click hit a video's X
+
+// Moving a video in the grid: drag it onto another video and they swap places
+// (on a zoomed-in video, where dragging pans, press and hold still first).
+static BOOL g_moving, g_move_cancel;
+static Tile *g_move_target;     // video the dragged one would swap with
+static POINT g_press;           // where the button went down
 
 static BOOL g_fullscreen;
 static WINDOWPLACEMENT g_wp = { sizeof(WINDOWPLACEMENT) };
@@ -771,6 +780,47 @@ static void set_drop(Tile *t, int zone)
     draw_drop(t);
 }
 
+// While a video is being moved it is dimmed with an orange outline, and the video
+// under the pointer shows where it will go.
+static void draw_move(Tile *t)
+{
+    static Ass a;
+    if (!t || t->closing)
+        return;
+    a.len = 0;
+    a.buf[0] = 0;
+
+    if (g_moving && (t == g_capture_tile || t == g_move_target)) {
+        Layout l, *L = &l;
+        get_layout(t, L);
+        if (t == g_capture_tile) {
+            int b = max(2, S(3));
+            ass_shape(&a, 0x000000, 0x80);
+            ass_rect(&a, 0, 0, L->w, L->h);
+            ass_shape(&a, ACCENT, 0);
+            ass_rect(&a, 0, 0, L->w, b);
+            ass_rect(&a, 0, L->h - b, L->w, L->h);
+            ass_rect(&a, 0, 0, b, L->h);
+            ass_rect(&a, L->w - b, 0, L->w, L->h);
+        } else {
+            RECT r;
+            SetRect(&r, S(12), S(12), L->w - S(12), L->h - S(12));
+            draw_zone(&a, L, &r, TRUE, "Move here");
+        }
+    }
+    send_overlay(t, MOVE_OVERLAY, &a, t->move_last);
+}
+
+static void set_move_target(Tile *t)
+{
+    if (t == g_move_target)
+        return;
+    Tile *old = g_move_target;
+    g_move_target = t;
+    draw_move(old);
+    draw_move(t);
+}
+
 // Shows the bar on tile t (moving it from another tile if needed).
 static void show_bar(Tile *t)
 {
@@ -1045,6 +1095,8 @@ static void forget_tile(Tile *t)
         g_osd_tile = NULL;
     if (g_drop_tile == t)
         g_drop_tile = NULL;
+    if (g_move_target == t)
+        g_move_target = NULL;
     if (g_solo == t)
         g_solo = NULL;
     if (g_capture_tile == t) {
@@ -1292,11 +1344,64 @@ static void on_left_down(int x, int y)
     default:
         g_dragging = TRUE;
         g_capture_tile = t;
-        g_drag_last.x = x;
-        g_drag_last.y = y;
+        g_drag_last.x = g_press.x = x;
+        g_drag_last.y = g_press.y = y;
         SetCapture(g_hwnd);
+        if (t->zoom > 0) // dragging pans; holding still first moves the video
+            SetTimer(g_hwnd, MOVE_TIMER, MOVE_HOLD_MS, NULL);
         break;
     }
+}
+
+// Videos can be moved when there are several in the grid.
+static BOOL can_move(void)
+{
+    Tile *v[MAX_TILES];
+    return live_tiles(v) > 1 && !g_solo;
+}
+
+static BOOL moved_from_press(int x, int y)
+{
+    int th = (int)lround(6 * GetDpiForWindow(g_hwnd) / 96.0);
+    return abs(x - g_press.x) > th || abs(y - g_press.y) > th;
+}
+
+static void start_move(void)
+{
+    KillTimer(g_hwnd, MOVE_TIMER);
+    if (!g_capture_tile || g_moving || !can_move())
+        return;
+    g_moving = TRUE;
+    g_move_cancel = FALSE;
+    SetCursor(LoadCursorW(NULL, IDC_SIZEALL));
+    draw_move(g_capture_tile);
+}
+
+// Ends a move (on button release, or cancelled with Esc): swaps the dragged video
+// with the one it was dropped on.
+static void finish_move(void)
+{
+    Tile *src = g_capture_tile, *dst = g_move_target;
+    KillTimer(g_hwnd, MOVE_TIMER);
+    if (!g_moving)
+        return;
+    g_moving = FALSE;
+    g_move_target = NULL;
+    draw_move(src);
+    draw_move(dst);
+    if (src && dst && !g_move_cancel) {
+        int a = -1, b = -1;
+        for (int i = 0; i < g_ntiles; i++) {
+            if (g_tiles[i] == src) a = i;
+            if (g_tiles[i] == dst) b = i;
+        }
+        if (a >= 0 && b >= 0) {
+            g_tiles[a] = dst;
+            g_tiles[b] = src;
+            layout_tiles();
+        }
+    }
+    g_move_cancel = FALSE;
 }
 
 static void on_mouse_move(int x, int y)
@@ -1317,9 +1422,19 @@ static void on_mouse_move(int x, int y)
     if (t && g_scrubbing) {
         scrub_to(t, x - t->rc.left);
     } else if (t && g_dragging) {
-        if (t->zoom > 0) {
+        if (g_moving) {
+            Tile *over = tile_at(x, y);
+            set_move_target(over != t ? over : NULL);
+            SetCursor(LoadCursorW(NULL, IDC_SIZEALL));
+        } else if (t->zoom > 0) {
+            if (moved_from_press(x, y))
+                KillTimer(g_hwnd, MOVE_TIMER); // it's a pan, not a hold
             SetCursor(LoadCursorW(NULL, IDC_SIZEALL));
             pan_by(t, x - g_drag_last.x, y - g_drag_last.y);
+        } else if (can_move() && moved_from_press(x, y)) {
+            start_move();
+            Tile *over = tile_at(x, y);
+            set_move_target(over != t ? over : NULL);
         }
         g_drag_last.x = x;
         g_drag_last.y = y;
@@ -1499,6 +1614,11 @@ static void on_key(HWND hwnd, WPARAM key)
         v[n++] = t;
     if (!t)
         return;
+    if (g_moving && key == VK_ESCAPE) { // cancel moving a video
+        g_move_cancel = TRUE;
+        ReleaseCapture();
+        return;
+    }
     switch (key) {
     case VK_SPACE:
     case 'K':
@@ -1728,6 +1848,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         ReleaseCapture();
         return 0;
     case WM_CAPTURECHANGED:
+        finish_move();
         g_dragging = FALSE;
         if (g_scrubbing) {
             g_scrubbing = FALSE;
@@ -1775,6 +1896,10 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_TIMER:
         if (wp == BAR_TIMER) {
             on_bar_timer();
+        } else if (wp == MOVE_TIMER) {
+            if (g_dragging)
+                start_move(); // held still on a zoomed-in video
+            KillTimer(hwnd, MOVE_TIMER);
         } else if (wp == OSD_TIMER) {
             KillTimer(hwnd, OSD_TIMER);
             g_osd = OSD_NONE;

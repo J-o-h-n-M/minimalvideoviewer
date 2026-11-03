@@ -58,10 +58,15 @@ Hold Shift with Space, J/L, Left/Right or R to do it to all videos. Double-click
 that one; double-click again (or Esc) to go back to the grid. Hovering a video shows an X in its
 top-right corner that removes it.
 
+To rearrange the videos, drag one onto another and they swap places: the video you move is dimmed
+and the one under the pointer shows **Move here** (Esc cancels). On a zoomed-in video, where dragging
+pans, press and hold still for a moment first.
+
 | Input | Action |
 | --- | --- |
 | Mouse wheel | Zoom in/out at the cursor |
-| Left drag | Pan (when zoomed) |
+| Left drag | Pan (when zoomed); with several videos, drag one onto another to swap them |
+| Hold, then drag (zoomed-in video) | Swap it with another video |
 | Click/drag progress bar | Seek |
 | Right-click | Menu: audio track, subtitles (incl. loading a subtitle file), jump distance, add/replace/close video, fullscreen, reset zoom, quit |
 | Drag videos onto "+ Add video" (or the black area) | Add them |
