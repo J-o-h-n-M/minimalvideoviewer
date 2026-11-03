@@ -12,6 +12,11 @@ A tiny looping video player for Windows, built on libmpv (hardware decoding, GPU
 | --- | --- |
 | ![Fast forwarding at 4x, shown as "FF 4×" in the control bar](docs/fast-forward.jpg) | ![Right-click menu with the Subtitles submenu open](docs/menu.jpg) |
 
+**Play several videos at once.** The layout follows the shape of the videos, so wide and vertical
+videos both get as much room as possible.
+
+![Four videos at once, two wide and two vertical, with the control bar and close button on one](docs/grid.jpg)
+
 ## Download
 
 Get the zip from the [latest release](https://github.com/J-o-h-n-M/minimalvideoviewer/releases/latest),
@@ -40,12 +45,15 @@ frame by frame and stops at the start; press play to return to normal playback.
 
 ### Several videos at once
 
-Open or drop several files (or drop more onto the window, or press A) and they play side by side,
-up to 16. The layout follows the shape of the videos so they are as large as possible: vertical
-videos stand next to each other, wide ones are stacked. Each video loops and zooms on its own. The mouse and keys act
-on the video under the mouse pointer, which is also the only one you hear. Hold Shift with Space,
-J/L, Left/Right or R to do it to all videos. Double-click a video to show only that one; double-click
-again (or Esc) to go back to the grid.
+Open several files at once, drop more onto the black area around the videos (or hold Ctrl while
+dropping), or press A, and they play side by side, up to 16. The layout follows the shape of the
+videos so they are as large as possible: vertical videos stand next to each other, wide ones are
+stacked. Each video loops and zooms on its own.
+
+The mouse and keys act on the video under the mouse pointer, which is also the only one you hear.
+Hold Shift with Space, J/L, Left/Right or R to do it to all videos. Double-click a video to show only
+that one; double-click again (or Esc) to go back to the grid. Hovering a video shows an X in its
+top-right corner that removes it. Dropping a video onto a video replaces it.
 
 | Input | Action |
 | --- | --- |
@@ -53,7 +61,9 @@ again (or Esc) to go back to the grid.
 | Left drag | Pan (when zoomed) |
 | Click/drag progress bar | Seek |
 | Right-click | Menu: audio track, subtitles (incl. loading a subtitle file), jump distance, add/replace/close video, fullscreen, reset zoom, quit |
-| Drop video files | Add them to the grid |
+| Drop a video on a video | Replace that video (more files dropped at once are added) |
+| Drop videos on the black area, or with Ctrl held | Add them to the grid |
+| X in the top-right corner (on hover) | Remove that video (when there are several) |
 | Drop a subtitle file | Load and show it in the video it is dropped on (.srt, .ass, .ssa, .vtt, .sub, .idx, .sup) |
 | R | Reset zoom |
 | Double-click | Fullscreen (one video) / show only this video and back (several videos) |

@@ -105,12 +105,13 @@ static BOOL g_restored_placement; // window size/state comes from the last sessi
 
 static BOOL g_dragging;
 static POINT g_drag_last;
+static BOOL g_closed_by_click; // the last click hit a video's X
 
 static BOOL g_fullscreen;
 static WINDOWPLACEMENT g_wp = { sizeof(WINDOWPLACEMENT) };
 
 // Control bar state.
-enum { HIT_NONE, HIT_BAR, HIT_TRACK, HIT_REW, HIT_PLAY, HIT_FF };
+enum { HIT_NONE, HIT_BAR, HIT_TRACK, HIT_REW, HIT_PLAY, HIT_FF, HIT_CLOSE };
 static BOOL g_bar_visible;
 static int g_hover = HIT_NONE; // part of the bar under the mouse
 static BOOL g_scrubbing;
@@ -407,7 +408,8 @@ static void set_jump(int seconds)
 typedef struct {
     double s; // DPI scale
     int w, h, top, x0, x1, ty, by, cell;
-    int bx[3]; // button centres: rewind, play, fast forward
+    int bx[3];       // button centres: rewind, play, fast forward
+    int xx, xy, xr;  // close (X) button in the top-right corner: centre, radius
 } Layout;
 
 #define S(v) ((int)lround((v) * L->s))
@@ -426,6 +428,16 @@ static void get_layout(Tile *t, Layout *L)
     L->bx[0] = L->w / 2 - S(48);
     L->bx[1] = L->w / 2;
     L->bx[2] = L->w / 2 + S(48);
+    L->xr = S(14);
+    L->xx = L->w - S(24);
+    L->xy = S(24);
+}
+
+// The X that removes a video is only offered when there are several.
+static BOOL can_close(void)
+{
+    Tile *v[MAX_TILES];
+    return live_tiles(v) > 1;
 }
 
 static int hit_test(Tile *t, int x, int y)
@@ -434,6 +446,9 @@ static int hit_test(Tile *t, int x, int y)
     if (!g_bar_visible || t != g_bar_tile)
         return HIT_NONE;
     get_layout(t, L);
+    int dx = x - L->xx, dy = y - L->xy, r = L->xr + S(2);
+    if (can_close() && dx * dx + dy * dy <= r * r)
+        return HIT_CLOSE;
     if (y < L->top || y >= L->h || x < 0 || x >= L->w)
         return HIT_NONE;
     if (y < L->ty + S(10) && x >= L->x0 - S(8) && x <= L->x1 + S(8))
@@ -474,6 +489,11 @@ static void ass_rect(Ass *a, int x0, int y0, int x1, int y1)
 static void ass_tri(Ass *a, int x0, int y0, int x1, int y1, int x2, int y2)
 {
     ass_printf(a, "m %d %d l %d %d l %d %d ", x0, y0, x1, y1, x2, y2);
+}
+
+static void ass_quad(Ass *a, int x0, int y0, int x1, int y1, int x2, int y2, int x3, int y3)
+{
+    ass_printf(a, "m %d %d l %d %d l %d %d l %d %d ", x0, y0, x1, y1, x2, y2, x3, y3);
 }
 
 static void ass_circle(Ass *a, int cx, int cy, int r)
@@ -581,6 +601,17 @@ static void draw_bar(Tile *t)
                 ass_rect(&a, cx - S(7), cy - S(8), cx - S(2), cy + S(8));
                 ass_rect(&a, cx + S(2), cy - S(8), cx + S(7), cy + S(8));
             }
+        }
+
+        // X in the top-right corner removes this video (red while hovered).
+        if (can_close()) {
+            int cx = L->xx, cy = L->xy, d = S(5), k = max(1, S(1));
+            ass_shape(&a, g_hover == HIT_CLOSE ? 0x2828D8 : 0x000000, g_hover == HIT_CLOSE ? 0x00 : 0x60);
+            ass_circle(&a, cx, cy, L->xr);
+            ass_shape(&a, 0xFFFFFF, 0); // the two strokes as separate shapes so they don't cancel out
+            ass_quad(&a, cx - d + k, cy - d - k, cx + d + k, cy + d - k, cx + d - k, cy + d + k, cx - d - k, cy - d + k);
+            ass_shape(&a, 0xFFFFFF, 0);
+            ass_quad(&a, cx - d - k, cy + d - k, cx + d - k, cy - d - k, cx + d + k, cy - d + k, cx - d + k, cy + d + k);
         }
 
         // The time is left out when the tile is too narrow for it next to the buttons.
@@ -1161,6 +1192,10 @@ static void on_left_down(int x, int y)
     case HIT_REW:  shuttle_step(t, -1); break;
     case HIT_PLAY: play_pause(t); break;
     case HIT_FF:   shuttle_step(t, +1); break;
+    case HIT_CLOSE:
+        close_tile(t);
+        g_closed_by_click = TRUE;
+        break;
     case HIT_BAR:  break;
     default:
         g_dragging = TRUE;
@@ -1460,6 +1495,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     case WM_LBUTTONDOWN:
+        g_closed_by_click = FALSE;
         on_left_down(GET_X_LPARAM(lp), GET_Y_LPARAM(lp));
         return 0;
     case WM_MOUSEMOVE:
@@ -1499,7 +1535,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_LBUTTONDBLCLK: {
         int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
         Tile *t = tile_at(x, y), *v[MAX_TILES];
-        if (!t)
+        if (!t || g_closed_by_click) // the first click removed a video; another may be here now
             return 0;
         if (hit_test(t, x - t->rc.left, y - t->rc.top) != HIT_NONE)
             on_left_down(x, y); // fast clicks on the bar
@@ -1545,11 +1581,15 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_DROPFILES: {
-        // Videos are added to the grid; subtitles go to the video they are dropped on.
+        // A video dropped on a video replaces it; further videos, videos dropped on
+        // the black space around the grid, and videos dropped with Ctrl held are added.
+        // Subtitles go to the video they are dropped on.
         static wchar_t path[32768];
         POINT pt;
         DragQueryPoint((HDROP)wp, &pt);
-        Tile *target = tile_at(pt.x, pt.y);
+        Tile *target = tile_at(pt.x, pt.y), *replace = target;
+        if (GetKeyState(VK_CONTROL) < 0)
+            replace = NULL;
         UINT count = DragQueryFileW((HDROP)wp, 0xFFFFFFFF, NULL, 0);
         for (UINT i = 0; i < count; i++) {
             if (!DragQueryFileW((HDROP)wp, i, path, ARRAYSIZE(path)))
@@ -1558,6 +1598,9 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 Tile *t = target ? target : g_audio_tile;
                 if (t)
                     add_subtitle(t, path);
+            } else if (replace) {
+                load_file(replace, path);
+                replace = NULL;
             } else {
                 add_video(path);
             }
