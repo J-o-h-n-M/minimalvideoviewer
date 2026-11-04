@@ -2035,7 +2035,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     wc.lpszClassName = L"MinimalVideoViewerTile";
     RegisterClassExW(&wc);
     wc.lpfnWndProc = wnd_proc;
-    wc.hIcon = LoadIconW(NULL, IDI_APPLICATION);
+    wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(1));
+    wc.hIconSm = LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
+                            GetSystemMetrics(SM_CYSMICON), 0); // the bold variant for small sizes
     wc.lpszClassName = L"MinimalVideoViewer";
     RegisterClassExW(&wc);
 

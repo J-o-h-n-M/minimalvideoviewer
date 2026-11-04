@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/logo.png" width="128" alt="MinimalVideoViewer logo: an orange play triangle inside white zoom corners"></p>
+
 # MinimalVideoViewer
 
 A tiny looping video player for Windows, built on libmpv (hardware decoding, GPU scaling).
