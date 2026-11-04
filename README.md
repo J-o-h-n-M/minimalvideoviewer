@@ -33,8 +33,9 @@ produces `build\MinimalVideoViewer.exe` + `build\libmpv-2.dll` — keep those tw
 
 ## Use
 
-`MinimalVideoViewer.exe video.mp4 [more.mp4 ...]`, drag files onto the window, or start it without
-arguments to pick one or more files.
+Start `MinimalVideoViewer.exe` and it opens an empty black window: drop your videos on it, or press A
+to choose files. You can also pass files on the command line (`MinimalVideoViewer.exe video.mp4 more.mp4`)
+or use "Open with" on a video.
 Videos always loop; zoom and pan are kept across loops. The window reopens with the size,
 position and maximized state it had when you last closed it.
 

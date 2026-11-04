@@ -16,6 +16,8 @@
 //   Delete             close the video under the mouse (when there are several)
 //   Esc                leave fullscreen or single-video view,  Q  quit
 //
+// Started without files it shows an empty black window to drop videos on.
+//
 // Several videos play at once in a grid: drop more files onto the window or use
 // "Add videos". Mouse and keys act on the video under the mouse pointer, which is
 // also the only one with sound. Hold Shift with Space, J/L, Left/Right or R to act
@@ -1253,6 +1255,7 @@ static Tile *add_video(const wchar_t *path)
     apply_audio();
     layout_tiles();
     load_file(t, path);
+    InvalidateRect(g_hwnd, NULL, TRUE); // erases the hint of the empty window
     return t;
 }
 
@@ -1603,6 +1606,53 @@ static void show_menu(HWND hwnd, int x, int y, Tile *t)
         PostMessageW(hwnd, WM_CLOSE, 0, 0);
 }
 
+// Right-click menu of the empty window.
+static void show_empty_menu(HWND hwnd, int x, int y)
+{
+    HMENU menu = CreatePopupMenu();
+    AppendMenuW(menu, MF_STRING, ID_ADD, L"Add videos...\tA");
+    AppendMenuW(menu, MF_STRING | (g_fullscreen ? MF_CHECKED : 0), ID_FULLSCREEN, L"Fullscreen\tF");
+    AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(menu, MF_STRING, ID_QUIT, L"Quit\tQ");
+    int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, 0, hwnd, NULL);
+    DestroyMenu(menu);
+    if (cmd == ID_ADD && pick_files(hwnd, kVideoFilter, TRUE))
+        add_picked_videos();
+    else if (cmd == ID_FULLSCREEN)
+        toggle_fullscreen();
+    else if (cmd == ID_QUIT)
+        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+}
+
+// Without videos the window is black with a short hint in the middle.
+static void paint_empty(HWND hwnd)
+{
+    PAINTSTRUCT ps;
+    RECT rc;
+    HDC dc = BeginPaint(hwnd, &ps);
+    if (g_ntiles == 0) {
+        int dpi = GetDpiForWindow(hwnd), h = MulDiv(36, dpi, 96);
+        HFONT font_big = CreateFontW(-MulDiv(22, dpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                                CLEARTYPE_QUALITY, 0, L"Segoe UI");
+        HFONT font_small = CreateFontW(-MulDiv(13, dpi, 96), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0,
+                                  CLEARTYPE_QUALITY, 0, L"Segoe UI");
+        HGDIOBJ old = SelectObject(dc, font_big);
+        GetClientRect(hwnd, &rc);
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(170, 170, 170));
+        OffsetRect(&rc, 0, -h / 2);
+        DrawTextW(dc, L"Drop videos here", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(dc, font_small);
+        SetTextColor(dc, RGB(140, 140, 140));
+        OffsetRect(&rc, 0, h);
+        DrawTextW(dc, L"or press A to choose files", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(dc, old);
+        DeleteObject(font_big);
+        DeleteObject(font_small);
+    }
+    EndPaint(hwnd, &ps);
+}
+
 // Keys act on the video under the mouse (the one with sound); with Shift, the
 // playback keys act on all videos.
 static void on_key(HWND hwnd, WPARAM key)
@@ -1612,8 +1662,15 @@ static void on_key(HWND hwnd, WPARAM key)
     int n = all ? live_tiles(v) : 0;
     if (!all && t)
         v[n++] = t;
-    if (!t)
+    if (!t) { // empty window: only the keys that don't need a video
+        if ((key == 'A' || key == 'O') && pick_files(hwnd, kVideoFilter, TRUE))
+            add_picked_videos();
+        else if (key == 'F' || key == VK_F11 || (key == VK_ESCAPE && g_fullscreen))
+            toggle_fullscreen();
+        else if (key == 'Q')
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
         return;
+    }
     if (g_moving && key == VK_ESCAPE) { // cancel moving a video
         g_move_cancel = TRUE;
         ReleaseCapture();
@@ -1706,8 +1763,9 @@ static void drag_track(POINTL pt, DWORD *effect)
     ScreenToClient(g_hwnd, &p);
     Tile *t = tile_at(p.x, p.y);
     set_drop(t, t ? drop_zone_at(t, p.x - t->rc.left, p.y - t->rc.top) : ZONE_NONE);
-    *effect = (g_drag_videos || g_drag_subs) && (*effect & DROPEFFECT_COPY) ? DROPEFFECT_COPY
-                                                                           : DROPEFFECT_NONE;
+    // Subtitles need a video to go to.
+    BOOL accept = g_drag_videos || (g_drag_subs && g_audio_tile);
+    *effect = accept && (*effect & DROPEFFECT_COPY) ? DROPEFFECT_COPY : DROPEFFECT_NONE;
 }
 
 static HRESULT STDMETHODCALLTYPE dt_query_interface(IDropTarget *self, REFIID riid, void **out)
@@ -1883,11 +1941,17 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             t = g_audio_tile;
         if (t)
             show_menu(hwnd, pt.x, pt.y, t);
+        else
+            show_empty_menu(hwnd, pt.x, pt.y);
         return 0;
     }
 
+    case WM_PAINT:
+        paint_empty(hwnd);
+        return 0;
+
     case WM_SETCURSOR:
-        if (LOWORD(lp) == HTCLIENT && g_fullscreen && !g_bar_visible) {
+        if (LOWORD(lp) == HTCLIENT && g_fullscreen && !g_bar_visible && g_ntiles > 0) {
             SetCursor(NULL);
             return TRUE;
         }
@@ -1913,6 +1977,8 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_SIZE:
         layout_tiles();
+        if (g_ntiles == 0)
+            InvalidateRect(hwnd, NULL, TRUE); // keep the hint centred
         return 0;
 
     case WM_DPICHANGED: {
@@ -1959,8 +2025,6 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
 
     int argc = 0;
     wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (argc < 2 && !pick_files(NULL, kVideoFilter, TRUE))
-        return 0;
 
     WNDCLASSEXW wc = { sizeof(wc) };
     wc.style = CS_DBLCLKS;
@@ -1985,14 +2049,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdline, int show)
     g_restored_placement = restore_placement();
     if (!g_restored_placement)
         ShowWindow(g_hwnd, show);
-    if (argc >= 2)
-        for (int i = 1; i < argc; i++)
-            add_video(argv[i]);
-    else
-        add_picked_videos();
-    LocalFree(argv);
-    if (g_ntiles == 0)
+    for (int i = 1; i < argc; i++)
+        add_video(argv[i]);
+    if (argc >= 2 && g_ntiles == 0)
         return 1;
+    LocalFree(argv); // without files: an empty window to drop videos on
 
     MSG msg;
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
